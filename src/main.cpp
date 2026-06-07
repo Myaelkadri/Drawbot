@@ -64,8 +64,10 @@ int speedRight = 0;
 #define ENTRAXE_CM     7.0
 #define ROTATION_CALIB 0.94f
 #define OFFSET_STYLO_CM 14.5f
-#define RAYON_CERCLE_MIN_CM 18.0f
+#define RAYON_ROTATION_STYLO_CM 14.0f
+#define RAYON_CERCLE_MIN_CM 2.5f
 #define CERCLE_CALIB 1.4f
+#define CERCLE_SPIN_CALIB 1.28f
 #define STYLO_ROTATION_GAIN 1.45f
 
 //  Timers 
@@ -383,14 +385,14 @@ function sendCmd(cmd) {
 }
 
 function sendSeq2() {
-  const r = prompt("Rayon du cercle en cm (18 à 40) :", "20");
+  const r = prompt("Rayon du cercle en cm (2.5 à 20) :", "14");
   if (r !== null) {
     const rayon = parseFloat(r);
-    if (rayon >= 18 && rayon <= 40) {
+    if (rayon >= 2.5 && rayon <= 20) {
       if (ws && ws.readyState === 1)
         ws.send(JSON.stringify({cmd: "SEQ2", speed: speedPWM, rayon: rayon}));
     } else {
-      alert("Rayon invalide ! Entre 18 et 40 cm.");
+      alert("Rayon invalide ! Entre 2.5 et 20 cm.");
     }
   }
 }
@@ -543,6 +545,29 @@ void readMAG() {
 
 
 //  CALCUL ODOMÉTRIE
+float normaliserAngle180(float angle) {
+  while (angle > 180.0f) angle -= 360.0f;
+  while (angle < -180.0f) angle += 360.0f;
+  return angle;
+}
+
+float lireCapMoyen(int mesures) {
+  float sommeSin = 0.0f;
+  float sommeCos = 0.0f;
+
+  for (int i = 0; i < mesures; i++) {
+    readMAG();
+    float rad = heading * PI / 180.0f;
+    sommeSin += sin(rad);
+    sommeCos += cos(rad);
+    delay(25);
+  }
+
+  float cap = atan2(sommeSin, sommeCos) * 180.0f / PI;
+  if (cap < 0.0f) cap += 360.0f;
+  return cap;
+}
+
 void updateOdometry(float dt) {
   long d_G = enc_G - prev_enc_G;
   long d_D = enc_D - prev_enc_D;
@@ -708,7 +733,7 @@ void resetPoseEncoders() {
 }
 
 void suivreStyloVers(float cibleX, float cibleY, float &robotX, float &robotY, float &theta) {
-  const float vitesseStylo = 4.6f;
+  const float vitesseStylo = 2.4f;
   const float tolerance = 0.8f;
   const unsigned long timeoutMs = 9000;
   unsigned long debut = millis();
@@ -889,8 +914,7 @@ void suivreStyloHaut(float cibleX, float cibleY, float &robotX, float &robotY, f
   delay(300);
 }
 
-void suivreStyloHautDroit(float cibleX, float cibleY, float &robotX, float &robotY, float &theta) {
-  const float vitesseStylo = 4.6f;
+void suivreStyloHautDroit(float cibleX, float cibleY, float &robotX, float &robotY, float &theta, float vitesseStylo = 4.6f) {
   const unsigned long timeoutMs = 9000;
   unsigned long debut = millis();
 
@@ -967,149 +991,75 @@ void sequence1() {
 //  Rayon paramétrable envoyé depuis l'iPhone
 // ================================================
 void sequence2(float rayon_cm) {
-  int   vBase   = 90;
-
-  if (rayon_cm < RAYON_CERCLE_MIN_CM) {
-    Serial.println("Rayon impossible avec le stylo actuel");
-    return;
-  }
-
-  float rayonCentre = sqrt((rayon_cm * rayon_cm) - (OFFSET_STYLO_CM * OFFSET_STYLO_CM));
-
-  // Roue droite = extérieure (plus grande trajectoire)
-  // Roue gauche = intérieure (plus petite trajectoire)
-  float rExt = rayonCentre + ENTRAXE_CM / 2.0;
-  float rInt = rayonCentre - ENTRAXE_CM / 2.0;
-
-  // Les vitesses sont proportionnelles aux rayons
-  float vExt = vBase;
-  float vInt = vBase * (rInt / rExt) * 0.55f;
-
-  // Limites
-  if (vExt > 220) vExt = 220;
-  if (vInt < 35)  vInt = 35;
-
-  // Distance parcourue par la roue extérieure = circonférence ext
-  float distExt    = 2.0 * PI * rExt;
-  float ticksTotal = (distExt / (PI * DIAM_ROUE_CM)) * TICKS_PAR_TOUR * CERCLE_CALIB;
-
-  Serial.print("rayonStylo="); Serial.print(rayon_cm);
-  Serial.print(" rayonCentre="); Serial.print(rayonCentre);
-  Serial.print(" vExt="); Serial.print(vExt);
-  Serial.print(" vInt="); Serial.print(vInt);
-  Serial.print(" ticksTotal="); Serial.println(ticksTotal);
+  int spd = 70;
+float ticks360 = ((360.0f / 360.0f) * PI * 8.0f / (PI * DIAM_ROUE_CM)) * TICKS_PAR_TOUR * 0.85f;
+  Serial.print("ticks360="); Serial.println(ticks360);
 
   enc_G = 0; enc_D = 0;
-  motorDroit(-(int)vExt);
-  motorGauche((int)vInt);
+  float kp = 5.0f;
 
-  while (abs(enc_D) < (long)ticksTotal) {
+while (enc_G > -(long)ticks360) {
+    float erreur = abs(enc_G) - abs(enc_D);
+    int correction = (int)(kp * erreur);
+    correction = constrain(correction, -20, 20);
+
+    motorDroit(-spd + correction);
+    motorGauche(-spd - correction);
+
     ws.loop();
     delay(5);
   }
   stopMoteurs();
+  Serial.println("Cercle termine");
 }
+
+
 // ================================================
 //  SÉQUENCE 3 — La rose des vents (flèche vers le Nord)
 // ================================================
 
 void sequence3() {
-  int spd = 120;
-  float entraxe = 8.0;
+  const float erreurNordDeg = 15.0f;
+  const float correctionFlecheDeg = 18.0f;
 
-  // Ticks par degré de rotation sur place
-  // 1 tour complet (360°) = PI * entraxe parcouru par chaque roue
-  float ticksParDegre = (PI * entraxe / (PI * DIAM_ROUE_CM)) * TICKS_PAR_TOUR / 360.0;
+  for (int tentative = 0; tentative < 4; tentative++) {
+    float capBrut = lireCapMoyen(12);
+    float capCorrige = capBrut - erreurNordDeg;
+    if (capCorrige < 0.0f) capCorrige += 360.0f;
+    if (capCorrige >= 360.0f) capCorrige -= 360.0f;
 
-  float ticks6cm = (6.0 / (PI * DIAM_ROUE_CM)) * TICKS_PAR_TOUR;
-  float ticks2cm = (2.0 / (PI * DIAM_ROUE_CM)) * TICKS_PAR_TOUR;
+    float angleACorriger = normaliserAngle180(capCorrige + correctionFlecheDeg);
 
-  // --- 1. Lire le cap actuel ---
-  // Plusieurs lectures pour stabiliser
-  for (int i = 0; i < 10; i++) { readMAG(); delay(20); }
-  float capActuel = heading;  // 0-360°, 0 = Nord
+    Serial.print("Tentative nord : "); Serial.println(tentative + 1);
+    Serial.print("Cap brut moyen : "); Serial.println(capBrut);
+    Serial.print("Cap corrige : "); Serial.println(capCorrige);
+    Serial.print("Correction fleche : "); Serial.println(correctionFlecheDeg);
+    Serial.print("Angle a corriger : "); Serial.println(angleACorriger);
 
-  // --- 2. Calculer l'angle à corriger ---
-  // On veut pointer vers le Nord (heading = 0)
-  // angleACorrige = combien tourner (+ = gauche, - = droite)
-  float angleACorrige = capActuel;
-  if (angleACorrige > 180.0) angleACorrige -= 360.0; // ramène entre -180 et +180
+    if (fabs(angleACorriger) <= 5.0f) {
+      break;
+    }
 
-  long ticksCible = (long)(abs(angleACorrige) * ticksParDegre);
-
-  Serial.print("Cap actuel : ");   Serial.println(capActuel);
-  Serial.print("Angle a corriger: "); Serial.println(angleACorrige);
-  Serial.print("Ticks cible : ");  Serial.println(ticksCible);
-  Serial.print("TicksParDegre : "); Serial.println(ticksParDegre);
-
-  // --- 3. Rotation pour pointer vers le Nord ---
-  enc_G = 0; enc_D = 0;
-  if (angleACorrige > 0) {
-    // On est à droite du Nord → tourne à gauche
-    motorDroit(spd); motorGauche(-spd);
-    while (abs(enc_D) < ticksCible) { ws.loop(); delay(5); }
-  } else if (angleACorrige < 0) {
-    // On est à gauche du Nord → tourne à droite
-    motorDroit(-spd); motorGauche(spd);
-    while (abs(enc_G) < ticksCible) { ws.loop(); delay(5); }
+    float facteur = (fabs(angleACorriger) > 35.0f) ? 0.85f : 1.0f;
+    tournerDegres(angleACorriger * facteur, 65);
+    delay(500);
   }
-  stopMoteurs(); delay(500);
 
-  // --- 4. Vérification après rotation ---
-  for (int i = 0; i < 5; i++) { readMAG(); delay(20); }
-  Serial.print("Cap apres rotation : "); Serial.println(heading);
+  delay(400);
+  float capFinal = lireCapMoyen(8);
+  Serial.print("Cap final avant dessin : "); Serial.println(capFinal);
 
-  // --- 5. Dessiner la tige de la flèche (6 cm vers le Nord) ---
-  enc_G = 0; enc_D = 0;
-  motorDroit(spd); motorGauche(spd);
-  while (abs(enc_G) < (long)ticks6cm && abs(enc_D) < (long)ticks6cm) {
-    ws.loop(); delay(5);
-  }
-  stopMoteurs(); delay(300);
+  resetPoseEncoders();
+  float theta = PI / 2.0f;
+  float robotX = 0.0f;
+  float robotY = -OFFSET_STYLO_CM;
 
-  // --- 6. Pointe GAUCHE du triangle (tourne 150° à droite) ---
-  float ticks150 = ticksParDegre * 150.0;
-  enc_G = 0; enc_D = 0;
-  motorDroit(-spd); motorGauche(spd);
-  while (abs(enc_G) < (long)ticks150) { ws.loop(); delay(5); }
-  stopMoteurs(); delay(200);
+  suivreStyloHautDroit(0.0f, 5.0f, robotX, robotY, theta, 2.4f);
 
-  // Avance 2 cm (côté gauche de la pointe)
-  enc_G = 0; enc_D = 0;
-  motorDroit(spd); motorGauche(spd);
-  while (abs(enc_G) < (long)ticks2cm && abs(enc_D) < (long)ticks2cm) {
-    ws.loop(); delay(5);
-  }
-  stopMoteurs(); delay(200);
-
-  // --- 7. Retour au sommet (tourne 120° à gauche) ---
-  float ticks120 = ticksParDegre * 120.0;
-  enc_G = 0; enc_D = 0;
-  motorDroit(spd); motorGauche(-spd);
-  while (abs(enc_D) < (long)ticks120) { ws.loop(); delay(5); }
-  stopMoteurs(); delay(200);
-
-  // Avance 2 cm (côté droit de la pointe)
-  enc_G = 0; enc_D = 0;
-  motorDroit(spd); motorGauche(spd);
-  while (abs(enc_G) < (long)ticks2cm && abs(enc_D) < (long)ticks2cm) {
-    ws.loop(); delay(5);
-  }
-  stopMoteurs(); delay(200);
-
-  // --- 8. Fermer le triangle (tourne 150° à gauche) ---
-  enc_G = 0; enc_D = 0;
-  motorDroit(spd); motorGauche(-spd);
-  while (abs(enc_D) < (long)ticks150) { ws.loop(); delay(5); }
-  stopMoteurs(); delay(200);
-
-  // Revenir au centre (recule 2 cm)
-  enc_G = 0; enc_D = 0;
-  motorDroit(-spd); motorGauche(-spd);
-  while (abs(enc_G) < (long)ticks2cm && abs(enc_D) < (long)ticks2cm) {
-    ws.loop(); delay(5);
-  }
-  stopMoteurs();
+  suivreStyloVers(-2.0f, 4.8f, robotX, robotY, theta);
+  suivreStyloVers(0.0f, 9.0f, robotX, robotY, theta);
+  suivreStyloVers(2.0f, 4.0f, robotX, robotY, theta);
+  suivreStyloVers(-2.0f, 4.8f, robotX, robotY, theta);
 
   Serial.println("SEQ3 terminee");
 }
@@ -1130,7 +1080,7 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t* payload, size_t length)
 
     else if (cmd == "SEQ1") { sequence1(); }
     else if (cmd == "SEQ2") {
-      float rayon = doc["rayon"] | 10.0;  // rayon par défaut 10 cm
+      float rayon = doc["rayon"] | 14.0;  // rayon par défaut 14 cm
       sequence2(rayon);
     }
     else if (cmd == "SEQ3") { sequence3(); }
