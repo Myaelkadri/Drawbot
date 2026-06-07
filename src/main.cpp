@@ -829,6 +829,73 @@ void suivreStyloHaut(float cibleX, float cibleY, float &robotX, float &robotY, f
 
   long prevG = enc_G;
   long prevD = enc_D;
+  bool departYInitialise = false;
+  float departY = 0.0f;
+
+  while (millis() - debut < timeoutMs) {
+    float styloX = robotX + OFFSET_STYLO_CM * cos(theta);
+    float styloY = robotY + OFFSET_STYLO_CM * sin(theta);
+    if (!departYInitialise) {
+      departY = styloY;
+      departYInitialise = true;
+    }
+
+    if (styloY >= cibleY) break;
+
+    float avanceY = styloY - departY;
+    float cibleXCorrigee = cibleX;
+    if (avanceY > 4.0f) {
+      cibleXCorrigee += constrain((avanceY - 4.0f) * 0.12f, 0.0f, 3.0f);
+    }
+
+    float errX = cibleXCorrigee - styloX;
+    float vx = constrain(errX * 0.70f, -1.6f, 1.6f);
+    float vy = vitesseStylo;
+
+    float vxRobot = cos(theta) * vx + sin(theta) * vy;
+    float vyRobot = -sin(theta) * vx + cos(theta) * vy;
+    float omega = (vyRobot / OFFSET_STYLO_CM) * STYLO_ROTATION_GAIN;
+    if (avanceY > 4.0f) {
+      omega -= constrain((avanceY - 4.0f) * 0.010f, 0.0f, 0.25f);
+    }
+
+    commandeRoues(vxRobot, omega);
+
+    delay(20);
+    ws.loop();
+
+    long dG = enc_G - prevG;
+    long dD = enc_D - prevD;
+    prevG = enc_G;
+    prevD = enc_D;
+
+    float vG = vxRobot - omega * ENTRAXE_CM / 2.0f;
+    float vD = vxRobot + omega * ENTRAXE_CM / 2.0f;
+    int sensG = (vG >= 0) ? 1 : -1;
+    int sensD = (vD >= 0) ? 1 : -1;
+
+    float circ = PI * DIAM_ROUE_CM;
+    float distG = sensG * fabs((float)dG) / TICKS_PAR_TOUR * circ;
+    float distD = sensD * fabs((float)dD) / TICKS_PAR_TOUR * circ;
+    float dist = (distG + distD) / 2.0f;
+    float dTheta = (distD - distG) / ENTRAXE_CM;
+
+    theta += dTheta;
+    robotX += dist * cos(theta);
+    robotY += dist * sin(theta);
+  }
+
+  stopMoteurs();
+  delay(300);
+}
+
+void suivreStyloHautDroit(float cibleX, float cibleY, float &robotX, float &robotY, float &theta) {
+  const float vitesseStylo = 4.6f;
+  const unsigned long timeoutMs = 9000;
+  unsigned long debut = millis();
+
+  long prevG = enc_G;
+  long prevD = enc_D;
 
   while (millis() - debut < timeoutMs) {
     float styloX = robotX + OFFSET_STYLO_CM * cos(theta);
@@ -837,7 +904,7 @@ void suivreStyloHaut(float cibleX, float cibleY, float &robotX, float &robotY, f
     if (styloY >= cibleY) break;
 
     float errX = cibleX - styloX;
-    float vx = constrain(errX * 0.70f, -1.6f, 1.6f);
+    float vx = constrain(errX * 0.55f, -1.2f, 1.2f);
     float vy = vitesseStylo;
 
     float vxRobot = cos(theta) * vx + sin(theta) * vy;
@@ -886,7 +953,7 @@ void sequence1() {
   float robotX = 0.0f;
   float robotY = -OFFSET_STYLO_CM;
 
-  suivreStyloVers(0.0f, 16.0f, robotX, robotY, theta);
+  suivreStyloHautDroit(0.0f, 16.0f, robotX, robotY, theta);
   suivreStyloGauche(-10.0f, 11.0f, robotX, robotY, theta);
   suivreStyloHaut(-7.5f, 43.0f, robotX, robotY, theta);
 
