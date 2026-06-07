@@ -991,24 +991,27 @@ void sequence1() {
 //  Rayon paramétrable envoyé depuis l'iPhone
 // ================================================
 void sequence2(float rayon_cm) {
-  int spd = 70;
-float ticks360 = ((360.0f / 360.0f) * PI * 8.0f / (PI * DIAM_ROUE_CM)) * TICKS_PAR_TOUR * 0.85f;
-  Serial.print("ticks360="); Serial.println(ticks360);
+  const int spd = 70;
+  const float correctionArret = 1.2f;
+  const float ticks360 = (ENTRAXE_CM / DIAM_ROUE_CM) * TICKS_PAR_TOUR * correctionArret;
+  const unsigned long timeoutMs = 9000;
+  unsigned long debut = millis();
 
-  enc_G = 0; enc_D = 0;
-  float kp = 5.0f;
+  Serial.print("Rayon demande="); Serial.println(rayon_cm);
+  Serial.print("ticks360 cercle="); Serial.println(ticks360);
 
-while (enc_G > -(long)ticks360) {
-    float erreur = abs(enc_G) - abs(enc_D);
-    int correction = (int)(kp * erreur);
-    correction = constrain(correction, -20, 20);
+  enc_G = 0;
+  enc_D = 0;
 
-    motorDroit(-spd + correction);
-    motorGauche(-spd - correction);
+  while (((abs(enc_G) + abs(enc_D)) / 2) < (long)ticks360 &&
+         millis() - debut < timeoutMs) {
+    motorDroit(-spd);
+    motorGauche(-spd);
 
     ws.loop();
     delay(5);
   }
+
   stopMoteurs();
   Serial.println("Cercle termine");
 }
