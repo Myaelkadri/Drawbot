@@ -61,11 +61,12 @@ int speedRight = 0;
 //  Ticks/tour et diamètre roue 
 #define TICKS_PAR_TOUR 1052    
 #define DIAM_ROUE_CM   9.0
-#define ENTRAXE_CM     8.0
+#define ENTRAXE_CM     7.0
 #define ROTATION_CALIB 0.94f
-#define OFFSET_STYLO_CM 15.0f
+#define OFFSET_STYLO_CM 14.5f
 #define RAYON_CERCLE_MIN_CM 18.0f
 #define CERCLE_CALIB 1.4f
+#define STYLO_ROTATION_GAIN 1.45f
 
 //  Timers 
 unsigned long lastSensorRead = 0;
@@ -663,20 +664,231 @@ void tournerDegres(float degres, int spd) {
   delay(300);
 }
 
+int pwmFromWheelSpeed(float wheelSpeed) {
+  int pwm = (int)(fabs(wheelSpeed) * 35.0f);
+  if (pwm > 0 && pwm < 60) pwm = 60;
+  if (pwm > 100) pwm = 100;
+  return (wheelSpeed >= 0) ? pwm : -pwm;
+}
+
+void commandeRoues(float v_cm_s, float omega_rad_s) {
+  float vG = v_cm_s - omega_rad_s * ENTRAXE_CM / 2.0f;
+  float vD = v_cm_s + omega_rad_s * ENTRAXE_CM / 2.0f;
+
+  int pwmG = pwmFromWheelSpeed(vG);
+  int pwmD = pwmFromWheelSpeed(vD);
+
+  motorGauche(pwmG);
+  motorDroit(-pwmD);
+}
+
+void updatePoseFromEncoders(float &robotX, float &robotY, float &theta, int sensG, int sensD) {
+  static long lastG = 0;
+  static long lastD = 0;
+
+  long dTicksG = enc_G - lastG;
+  long dTicksD = enc_D - lastD;
+  lastG = enc_G;
+  lastD = enc_D;
+
+  float circ = PI * DIAM_ROUE_CM;
+  float distG = sensG * fabs((float)dTicksG) / TICKS_PAR_TOUR * circ;
+  float distD = sensD * fabs((float)dTicksD) / TICKS_PAR_TOUR * circ;
+  float dist = (distG + distD) / 2.0f;
+  float dTheta = (distD - distG) / ENTRAXE_CM;
+
+  theta += dTheta;
+  robotX += dist * cos(theta);
+  robotY += dist * sin(theta);
+}
+
+void resetPoseEncoders() {
+  enc_G = 0;
+  enc_D = 0;
+}
+
+void suivreStyloVers(float cibleX, float cibleY, float &robotX, float &robotY, float &theta) {
+  const float vitesseStylo = 4.6f;
+  const float tolerance = 0.8f;
+  const unsigned long timeoutMs = 9000;
+  unsigned long debut = millis();
+
+  long prevG = enc_G;
+  long prevD = enc_D;
+
+  while (millis() - debut < timeoutMs) {
+    float styloX = robotX + OFFSET_STYLO_CM * cos(theta);
+    float styloY = robotY + OFFSET_STYLO_CM * sin(theta);
+    float errX = cibleX - styloX;
+    float errY = cibleY - styloY;
+    float distErreur = sqrt(errX * errX + errY * errY);
+
+    if (distErreur < tolerance) break;
+
+    float vx = vitesseStylo * errX / distErreur;
+    float vy = vitesseStylo * errY / distErreur;
+
+    float vxRobot = cos(theta) * vx + sin(theta) * vy;
+    float vyRobot = -sin(theta) * vx + cos(theta) * vy;
+
+    float omega = (vyRobot / OFFSET_STYLO_CM) * STYLO_ROTATION_GAIN;
+    commandeRoues(vxRobot, omega);
+
+    delay(20);
+    ws.loop();
+
+    int sensG = 0;
+    int sensD = 0;
+    long dG = enc_G - prevG;
+    long dD = enc_D - prevD;
+    prevG = enc_G;
+    prevD = enc_D;
+
+    float vG = vxRobot - omega * ENTRAXE_CM / 2.0f;
+    float vD = vxRobot + omega * ENTRAXE_CM / 2.0f;
+    sensG = (vG >= 0) ? 1 : -1;
+    sensD = (vD >= 0) ? 1 : -1;
+
+    float circ = PI * DIAM_ROUE_CM;
+    float distG = sensG * fabs((float)dG) / TICKS_PAR_TOUR * circ;
+    float distD = sensD * fabs((float)dD) / TICKS_PAR_TOUR * circ;
+    float dist = (distG + distD) / 2.0f;
+    float dTheta = (distD - distG) / ENTRAXE_CM;
+
+    theta += dTheta;
+    robotX += dist * cos(theta);
+    robotY += dist * sin(theta);
+  }
+
+  stopMoteurs();
+  delay(300);
+}
+
+void suivreStyloGauche(float cibleX, float cibleY, float &robotX, float &robotY, float &theta) {
+  const float vitesseStylo = 4.6f;
+  const unsigned long timeoutMs = 6000;
+  unsigned long debut = millis();
+
+  long prevG = enc_G;
+  long prevD = enc_D;
+  bool ligneYInitialisee = false;
+  float ligneY = 0.0f;
+
+  while (millis() - debut < timeoutMs) {
+    float styloX = robotX + OFFSET_STYLO_CM * cos(theta);
+    float styloY = robotY + OFFSET_STYLO_CM * sin(theta);
+    if (!ligneYInitialisee) {
+      ligneY = cibleY;
+      ligneYInitialisee = true;
+    }
+
+    if (styloX <= cibleX) break;
+
+    float errY = ligneY - styloY;
+    float vx = -vitesseStylo;
+    float vy = constrain(errY * 0.45f, -1.2f, 1.2f);
+
+    float vxRobot = cos(theta) * vx + sin(theta) * vy;
+    float vyRobot = -sin(theta) * vx + cos(theta) * vy;
+    float omega = (vyRobot / OFFSET_STYLO_CM) * STYLO_ROTATION_GAIN;
+
+    commandeRoues(vxRobot, omega);
+
+    delay(20);
+    ws.loop();
+
+    long dG = enc_G - prevG;
+    long dD = enc_D - prevD;
+    prevG = enc_G;
+    prevD = enc_D;
+
+    float vG = vxRobot - omega * ENTRAXE_CM / 2.0f;
+    float vD = vxRobot + omega * ENTRAXE_CM / 2.0f;
+    int sensG = (vG >= 0) ? 1 : -1;
+    int sensD = (vD >= 0) ? 1 : -1;
+
+    float circ = PI * DIAM_ROUE_CM;
+    float distG = sensG * fabs((float)dG) / TICKS_PAR_TOUR * circ;
+    float distD = sensD * fabs((float)dD) / TICKS_PAR_TOUR * circ;
+    float dist = (distG + distD) / 2.0f;
+    float dTheta = (distD - distG) / ENTRAXE_CM;
+
+    theta += dTheta;
+    robotX += dist * cos(theta);
+    robotY += dist * sin(theta);
+  }
+
+  stopMoteurs();
+  delay(300);
+}
+
+void suivreStyloHaut(float cibleX, float cibleY, float &robotX, float &robotY, float &theta) {
+  const float vitesseStylo = 4.6f;
+  const unsigned long timeoutMs = 14000;
+  unsigned long debut = millis();
+
+  long prevG = enc_G;
+  long prevD = enc_D;
+
+  while (millis() - debut < timeoutMs) {
+    float styloX = robotX + OFFSET_STYLO_CM * cos(theta);
+    float styloY = robotY + OFFSET_STYLO_CM * sin(theta);
+
+    if (styloY >= cibleY) break;
+
+    float errX = cibleX - styloX;
+    float vx = constrain(errX * 0.45f, -1.2f, 1.2f);
+    float vy = vitesseStylo;
+
+    float vxRobot = cos(theta) * vx + sin(theta) * vy;
+    float vyRobot = -sin(theta) * vx + cos(theta) * vy;
+    float omega = (vyRobot / OFFSET_STYLO_CM) * STYLO_ROTATION_GAIN;
+
+    commandeRoues(vxRobot, omega);
+
+    delay(20);
+    ws.loop();
+
+    long dG = enc_G - prevG;
+    long dD = enc_D - prevD;
+    prevG = enc_G;
+    prevD = enc_D;
+
+    float vG = vxRobot - omega * ENTRAXE_CM / 2.0f;
+    float vD = vxRobot + omega * ENTRAXE_CM / 2.0f;
+    int sensG = (vG >= 0) ? 1 : -1;
+    int sensD = (vD >= 0) ? 1 : -1;
+
+    float circ = PI * DIAM_ROUE_CM;
+    float distG = sensG * fabs((float)dG) / TICKS_PAR_TOUR * circ;
+    float distD = sensD * fabs((float)dD) / TICKS_PAR_TOUR * circ;
+    float dist = (distG + distD) / 2.0f;
+    float dTheta = (distD - distG) / ENTRAXE_CM;
+
+    theta += dTheta;
+    robotX += dist * cos(theta);
+    robotY += dist * sin(theta);
+  }
+
+  stopMoteurs();
+  delay(300);
+}
+
 // ================================================
 //  SÉQUENCE 1 — L'escalier
 //  Avance 20cm, tourne 90° gauche, avance 10cm,
 //  tourne 90° droite, avance 40cm
 // ================================================
 void sequence1() {
-  int spdAvance = 65;
-  int spdTourne = 75;
+  resetPoseEncoders();
 
-  avancerCm(20.0, spdAvance);
-  tournerDegres(90.0, spdTourne);
-  avancerCm(10.0, spdAvance);
-  tournerDegres(-90.0, spdTourne);
-  avancerCm(40.0, spdAvance);
+  float theta = PI / 2.0f;
+  float robotX = 0.0f;
+  float robotY = -OFFSET_STYLO_CM;
+
+  suivreStyloVers(0.0f, 16.0f, robotX, robotY, theta);
+  suivreStyloGauche(-10.0f, 11.0f, robotX, robotY, theta);
+  suivreStyloHaut(-7.5f, 43.0f, robotX, robotY, theta);
 
   Serial.println("SEQ1 terminee");
 }
