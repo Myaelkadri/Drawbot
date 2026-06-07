@@ -837,7 +837,7 @@ void suivreStyloHaut(float cibleX, float cibleY, float &robotX, float &robotY, f
     if (styloY >= cibleY) break;
 
     float errX = cibleX - styloX;
-    float vx = constrain(errX * 0.45f, -1.2f, 1.2f);
+    float vx = constrain(errX * 0.70f, -1.6f, 1.6f);
     float vy = vitesseStylo;
 
     float vxRobot = cos(theta) * vx + sin(theta) * vy;
